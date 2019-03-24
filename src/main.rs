@@ -1,46 +1,100 @@
 use std::env;
 use std::io::{self, Write};
-use failure::Error;
 use hyper::Client;
 use hyper::rt::{self, Future, Stream};
-use log::{debug, info, trace};
+use log::{debug, info, trace, error};
 use pretty_env_logger;
+use serde_derive::{Deserialize};
+use serde_json;
 
-fn main() -> Result<(), Error> {
+#[derive(Debug, Deserialize)]
+struct ServiceInstance {
+	name: String,
+	start_time: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogEntry {
+	name:                        String,
+	version: String,
+	owner: String,
+	capability: String,
+	runtime: String,
+	documentation: String,
+	prometheusJob: String,
+	minimum: usize,
+	maximum: usize,
+	authorized: bool,
+	metered: bool,
+	threaded: bool,
+//	Instances: Vec<ServiceInstance>,
+	MetricsTemplate:            String,
+    ThreadsTemplate:            String,
+	ZookeeperAnnouncementPoint: String,
+}
+
+fn main() {
     pretty_env_logger::init();
     info!("Catalog Fuzzer starts");
 
-    rt::run(rt::lazy(|| {
-        let server_address: String = env::var("GM_CATALOG_ADDRESS")
-            .unwrap_or_else(|_| "127.0.0.1:8080".into())
-            .parse()
-            .expect("Can't parse GM_CATALOG_ADDRESS");
+    let server_address: String = env::var("GM_CATALOG_ADDRESS")
+        .unwrap_or_else(|_| "127.0.0.1:8080".into())
+        .parse()
+        .unwrap();
 
-        let client = Client::new();
+    let fut = get_catalog_entries(&server_address)
+        // use the parsed vector
+        .map(|catalog_entries| {
+            // print users
+            println!("users: {:#?}", catalog_entries);
 
-        let uri = format!("http://{}/services", server_address).parse().unwrap();
-        info!("uri = {}", uri);
+        })
+        // if there was an error print it
+        .map_err(|e| {
+            error!("Error: {:?}", e)
+        });
 
-        client
-            .get(uri)
-            .and_then(|res| {
-                trace!("Response: {}", res.status());
-                res
-                    .into_body()
-                    // body is a stream; so as each chunk arrives
-                    .for_each(|chunk| {
-                        debug!("in chunk");
-                        io::stdout()
-                            .write_all(&chunk)
-                            .map_err(|e| {
-                                panic!("stdout failed: {}", e);
-                            })
-                    })
-            })
-            .map_err(|err| {
-                println!("Error: {}", err);
-            })    
-    }));
 
-    Ok(())
+
+    rt::run(fut);
+}
+
+fn get_catalog_entries(server_address: &str) -> impl Future<Item=Vec<CatalogEntry>, Error=FetchError> {
+    let client = Client::new();
+
+    let uri = format!("http://{}/services", server_address).parse().unwrap();
+    info!("uri = {}", uri);
+
+    client
+        .get(uri)
+        .and_then(|res| {
+            trace!("Response: {}", res.status());
+            trace!("Headers: {:#?}", res.headers());
+            res.into_body().concat2()
+        })
+        .from_err::<FetchError>()
+        .and_then(|body| {
+            let catalog_entries = serde_json::from_slice(&body).unwrap();
+            Ok(catalog_entries)
+        }) 
+        .from_err()
+}
+
+// Define a type so we can return multiple types of errors
+#[derive(Debug)]
+enum FetchError {
+    Http(hyper::Error),
+    Json(serde_json::Error),
+}
+
+impl From<hyper::Error> for FetchError {
+    fn from(err: hyper::Error) -> FetchError {
+        FetchError::Http(err)
+    }
+}
+
+impl From<serde_json::Error> for FetchError {
+    fn from(err: serde_json::Error) -> FetchError {
+        FetchError::Json(err)
+    }
 }
