@@ -7,6 +7,7 @@ use pretty_env_logger;
 use serde_derive::{Deserialize};
 use serde_json;
 use futures::{Async, Poll};
+use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
 struct ServiceInstance {
@@ -51,11 +52,19 @@ fn main() {
 fn get_catalog_entries(server_address: &str) -> impl Future<Item=Vec<CatalogEntry>, Error=FetchError> {
     let client = Client::new();
 
-    let uri = format!("http://{}/services", server_address).parse().unwrap();
+    let uri: hyper::Uri = format!("http://{}/services", server_address).parse().unwrap();
     info!("uri = {}", uri);
 
+    let request_id = Uuid::new_v4();
+    info!("request_id = {}", request_id);
+
+    let mut req = hyper::Request::new(hyper::Body::from(""));
+    *req.method_mut() = hyper::Method::GET;
+    *req.uri_mut() = uri.clone();
+    req.headers_mut().insert("x-request-id", format!("{}", request_id).parse().unwrap());
+
     client
-        .get(uri)
+        .request(req)
         .and_then(|res| {
             trace!("Response: {}", res.status());
             trace!("Headers: {:#?}", res.headers());
@@ -105,30 +114,20 @@ impl Future for Program {
     type Error = ();
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        rt::spawn(get_catalog_entries(&self.server_address)
-            // use the parsed vector
-            .map(|catalog_entries| {
-                // print users
-                println!("users: {:#?}", catalog_entries);
+        for _ in 0..1 {
+            rt::spawn(get_catalog_entries(&self.server_address)
+                // use the parsed vector
+                .map(|catalog_entries| {
+                    // print users
+                    println!("users: {:#?}", catalog_entries);
 
-            })
-            // if there was an error print it
-            .map_err(|e| {
-                error!("Error: {:?}", e)
-            })
-        );
-        rt::spawn(get_catalog_entries(&self.server_address)
-            // use the parsed vector
-            .map(|catalog_entries| {
-                // print users
-                println!("users: {:#?}", catalog_entries);
-
-            })
-            // if there was an error print it
-            .map_err(|e| {
-                error!("Error: {:?}", e)
-            })
-        );
+                })
+                // if there was an error print it
+                .map_err(|e| {
+                    error!("Error: {:?}", e)
+                })
+            );
+        }
         Ok(Async::NotReady)
     }
 
